@@ -1,0 +1,38 @@
+[package]
+name = "switch-migrator"
+version = "0.1.0"
+edition = "2021"
+description = "Утилита переноса данных Nintendo Switch на новую SD-карту в два клика"
+license = "MIT"
+
+[dependencies]
+# TUI
+ratatui = "0.28"
+crossterm = "0.28"
+
+# Сериализация манифеста
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Ошибки
+thiserror = "2"
+
+# Сжатие дампа EmuMMC (zstd)
+zstd = "0.13"
+
+# Для парсинга struct/бинарных данных и геометрии секторов
+byteorder = "1"
+
+# Кросс-платформенный расчёт размера и логгирование (light)
+log = "0.4"
+env_logger = "0.11"
+
+# Повторители / асинхронность для длинных операций (прогресс-бары)
+indicatif = "0.17"
+
+# UUID для имён бэкапов
+uuid = { version = "1", features = ["v4"] }
+
+[[bin]]
+name = "switch-migrator"
+path = "src/main.rs"
