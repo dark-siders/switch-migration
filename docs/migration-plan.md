@@ -8,7 +8,9 @@
 **Исходно:** в системе одна съёмная SD-карта (`/dev/sdb`), пользователь её выбрал.
 
 1. **Обнаружение** — `DiskFilter::safe_devices()` возвращает `BlockDevice`.
-   Признак разрешения: `/sys/class/block/sdb/removable == 1`.
+   Признак разрешения: `/sys/class/block/sdb/removable == 1`; плюс SD-карты во
+   встроенных кардридерах (`removable == 0`, но `device/type == "SD"` — не путать
+   с внутренним `"MMC"`).
 
 2. **Чтение MBR** — `disk::partition::parse_mbr("/dev/sdb")`:
    - сектор 0 → проверка `0x55AA`;
@@ -25,13 +27,18 @@
    - подсчёт `size_bytes` каждого каталога;
    - демонтируем.
 
-5. **Дамп EmuMMC** — `dump_emummc("/dev/sdb2", 0, emu_len, out, progress)`:
-   - открываем блок-устройство p2, читаем с offset 0 (это начало раздела);
+5. **Дамп EmuMMC** — `dump_emummc("/dev/sdb2", offset, len, out, progress)`:
+   - окно дампа из `emuMMC/emummc.ini` (после копирования sdmc, см. п.6):
+     `data_start = sector из ini`, `len = end_p2 - data_start`;
+     offset внутри раздела = `data_start - p2.start`. Без ini — весь раздел
+     (offset 0, len = p2.length). **Зачем:** Hekate резервирует заголовок/
+     выравнивание — на реальной карте данные EmuNAND лежат на +16 МиБ от
+     старта p2, и слепой дамп «всего раздела» сломал бы выравнивание после переноса;
    - блоки по 4 МБ пишем в `zstd` (level 3);
-   - результат: `emummc.img.<emu_start>.zst` (пустые секторы ≈ не занимают места).
+   - результат: `emummc.img.<data_start>.zst` (пустые секторы ≈ не занимают места).
 
 6. **Копирование sdmc** — рекурсивно `sdmc/` (bootloader, Atmosphere, Nintendo,
-   hakate configs) с mount'ом p1 RO.
+   hakate configs) с mount'ом p1 RO. Выполняется ДО дампа (из копии читаем ini).
 
 7. **Манифест** — `BackupManifest::new(...)`, сохраняем `manifest.json`.
 
@@ -84,7 +91,8 @@
 
 7. **Разворачивание образа EmuMMC**:
    `restore_emummc("emummc.img.*.zst", "/dev/sdc2", 0)` —
-   пишем в начало раздела p2, offset 0 (внутренняя геометрия сохраняется 1:1).
+   пишем в начало раздела p2, offset 0 (образ уже начинается строго с данных
+   EmuNAND → они ложатся ровно на старт p2, и `sector=` ниже согласован).
 
 8. **Копирование sdmc**: mount `/dev/sdc1` RW → копируем `sdmc/*`.
 

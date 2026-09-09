@@ -104,7 +104,9 @@ pub fn detect_disk(devname: &str) -> Option<BlockDevice> {
     let model = read_sys_string(devname, "device/model")
         .or_else(|| read_sys_string(devname, "model"));
 
-    let class = classify(removable, devname);
+    // Тип носителя для mmcblk*: "SD" (карта в ридере) или "MMC" (внутренний eMMC).
+    let sd_type = read_sys_string(devname, "device/type");
+    let class = classify(removable, devname, sd_type.as_deref());
 
     Some(BlockDevice {
         name: devname.to_string(),
@@ -120,22 +122,25 @@ pub fn detect_disk(devname: &str) -> Option<BlockDevice> {
 /// Определяет класс безопасности.
 ///
 /// Главный критерий — флаг `removable`, который ядро выставляет для USB/SD.
-/// Дополнительно имя проходит жёсткий фильтр, чтобы внутренние eMMC/SD-
-/// кардридеры (тоже removable) не путались, но в случае SD это как раз надо.
+/// Но встроенные (PCIe/USB) SD-кардридеры часто сообщают `removable=0`, хотя в
+/// слоте лежит съёмная SD-карта. Отличительный признак — `device/type == "SD"`
+/// в sysfs (у внутреннего eMMC там "MMC", у прочих дисков файла нет).
 ///
 /// Тест-режим (`allow-loop` / `SM_ALLOW_LOOP`): loop-устройства, созданные через
 /// `losetup` на файлах-образах, разрешаются к работе — это даёт возможность
 /// прогнать весь цикл (бэкап/миграцию) на виртуальных «картах» без риска.
-fn classify(removable: bool, devname: &str) -> BlockClass {
+fn classify(removable: bool, devname: &str, sd_type: Option<&str>) -> BlockClass {
     if devname.starts_with("loop") && allow_loop_devices() {
         // Тест-режим: loop-устройство (losetup) считается безопасным.
         return BlockClass::Removable;
     }
-    if !removable {
+    // SD-карта в слоте ридера, даже если ядро не выставило removable=1.
+    let sd_in_reader = devname.starts_with("mmcblk") && sd_type.is_some_and(|t| t == "SD");
+    if !removable && !sd_in_reader {
         // Не removable => точно внутренний диск (SATA/NVMe/eMMC) или сплот-диск.
         return BlockClass::Forbidden;
     }
-    // removable-накопитель. Допускаем к работе.
+    // removable-накопитель либо SD в ридере. Допускаем к работе.
     BlockClass::Removable
 }
 
@@ -288,14 +293,25 @@ mod tests {
 
     #[test]
     fn class_internal_blocks_sda() {
-        assert_eq!(classify(false, "sda"), BlockClass::Forbidden);
-        assert_eq!(classify(false, "nvme0n1"), BlockClass::Forbidden);
+        assert_eq!(classify(false, "sda", None), BlockClass::Forbidden);
+        assert_eq!(classify(false, "nvme0n1", None), BlockClass::Forbidden);
     }
 
     #[test]
     fn class_removable_pass() {
-        assert_eq!(classify(true, "sdb"), BlockClass::Removable);
-        assert_eq!(classify(true, "mmcblk0"), BlockClass::Removable);
+        assert_eq!(classify(true, "sdb", None), BlockClass::Removable);
+        assert_eq!(classify(true, "mmcblk0", None), BlockClass::Removable);
+    }
+
+    #[test]
+    fn sd_card_in_reader_pass() {
+        // PCIe/USB-ридеры сообщают removable=0 даже со вставленной SD-картой:
+        // засчитываем их по device/type == "SD".
+        assert_eq!(classify(false, "mmcblk0", Some("SD")), BlockClass::Removable);
+        // Внутренний eMMC (type "MMC") остаётся ЗАПРЕЩЁННЫМ.
+        assert_eq!(classify(false, "mmcblk0", Some("MMC")), BlockClass::Forbidden);
+        // Без device/type (обычный диск) с removable=0 — запрещён.
+        assert_eq!(classify(false, "mmcblk0", None), BlockClass::Forbidden);
     }
 
     #[test]
@@ -311,12 +327,12 @@ mod tests {
 
     #[test]
     fn loop_devices_pass_only_in_test_mode() {
-        assert_eq!(classify(false, "loop0"), BlockClass::Forbidden);
+        assert_eq!(classify(false, "loop0", None), BlockClass::Forbidden);
         set_allow_loop(true);
-        assert_eq!(classify(false, "loop0"), BlockClass::Removable);
+        assert_eq!(classify(false, "loop0", None), BlockClass::Removable);
         // Сброс для остальных тестов процесса.
         set_allow_loop(false);
-        assert_eq!(classify(false, "loop0"), BlockClass::Forbidden);
+        assert_eq!(classify(false, "loop0", None), BlockClass::Forbidden);
     }
 
     #[test]
