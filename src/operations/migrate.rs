@@ -126,23 +126,30 @@ device: {dev}
     let _restored = imaging::restore_emummc(&image, &p2_dev, 0)
         .map_err(|e| format!("restore: {e}"))?;
 
-    // ---------- ШАГ 4: копирование sdmc-данных на FAT32 ----------
+    // ---------- ШАГ 4-6: копирование sdmc, авто-фикс ini, Fix Archive Bit ----------
+    // Монтируем p1 в RW и выполняем всё через замыкание: даже при ошибке ниже
+    // монтирование гарантированно снимается (раньше падение в copy_tree
+    // оставляло смонтированный /tmp/sm-rw-*, что мешало повторным прогонам).
     let mnt = mount_rw(&p1_dev)?;
-    let sdmc_src = plan.backup_dir.join("sdmc");
-    if sdmc_src.is_dir() {
-        copy_tree(&sdmc_src, &mnt).map_err(|e| format!("copy: {e}"))?;
-    }
+    let res = (|| -> Result<(u64, u64, bool), String> {
+        let sdmc_src = plan.backup_dir.join("sdmc");
+        if sdmc_src.is_dir() {
+            copy_tree(&sdmc_src, &mnt).map_err(|e| format!("copy: {e}"))?;
+        }
 
-    // ---------- ШАГ 5: авто-фикс sector offset в emummc.ini ----------
-    // Новый стартовый сектор RAW-раздела.
-    let new_emu_start = p2_start;
-    let emummc_ini_fixed = fix_emummc_ini(&mnt, new_emu_start);
-
-    // ---------- ШАГ 6: Fix Archive Bit ----------
-    let archive_bits_fixed = crate::fat32::archive::fix_archive_bit(&mnt).unwrap_or(0);
+        // Новый стартовый сектор RAW-раздела для emummc.ini.
+        let new_emu_start = p2_start;
+        let emummc_ini_fixed = fix_emummc_ini(&mnt, new_emu_start);
+        let archive_bits_fixed = crate::fat32::archive::fix_archive_bit(&mnt).unwrap_or(0);
+        Ok((new_emu_start, archive_bits_fixed, emummc_ini_fixed))
+    })();
+    let _ = commands::run_capture("umount", &[mnt.to_str().unwrap()]);
+    let (new_emu_start, archive_bits_fixed, emummc_ini_fixed) = res.map_err(|e| {
+        eprintln!("Ошибка на этапе после монтирования — раздел размонтирован: {e}");
+        e
+    })?;
 
     // ---------- ШАГ 7: финализация ----------
-    let _ = commands::run_capture("umount", &[mnt.to_str().unwrap()]);
     imaging::sync_disk(&target.path).map_err(|e| e.to_string())?;
 
     Ok(MigrateResult {

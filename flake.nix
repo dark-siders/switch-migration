@@ -38,6 +38,10 @@
           src = ./.;
           cargoLock.lockFile = ./Cargo.lock;
 
+          # Лечит периодический SIGSEGV rustc при параллельной сборке
+          # тяжёлых proc-macro зависимостей (syn и др.) в песочнице Nix.
+          RUST_MIN_STACK = "33554432";
+
           nativeBuildInputs = with pkgs; [ pkg-config ];
           buildInputs = with pkgs; [ zlib openssl ];
 
