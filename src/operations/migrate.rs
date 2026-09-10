@@ -3,13 +3,18 @@
 //! Алгоритм (второй клик):
 //! 1. Проверка целевой карты (removable + safety guard).
 //! 2. Разметка MBR (как у оригинальных карт Switch):
-//!    - p1: FAT32, кластер 32 КБ, начало 2048 сектор.
-//!    - p2: RAW-раздел EmuMMC (до конца диска).
+//!    - p1: FAT32, кластер 32 КБ, начало 2048 сектор;
+//!    - p2: RAW-раздел EmuMMC — **адаптивный размер**: ровно под размер
+//!      образа EmuMMC из манифеста + запас (≈0.5 ГиБ), округлённый до 1 МиБ;
+//!      все остальное уходит в FAT32 p1. Так на любой ёмкости карты
+//!      (256/500/512 ГиБ) EmuMMC получает минимум места, а FAT32 — максимум.
 //! 3. `mkfs.vfat` с правильным размером сектора/кластера.
-//! 4. Разворачивание zstd-образа EmuMMC в p2.
-//! 5. Копирование данных FAT32.
+//! 4. Разворачивание zstd-образа EmuMMC в p2 (с прогрессом %).
+//! 5. Копирование данных FAT32 (с прогрессом %).
 //! 6. **Авто-фикс sector offset** в `emummc.ini` — главная фишка утилиты.
 //! 7. Fix Archive Bit на перенесённых файлах.
+//!
+//! Весь перенос отслеживается через `ProgressSink` (CLI — stderr, TUI — канал).
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -18,6 +23,7 @@ use crate::disk::BlockDevice;
 use crate::emummc::imaging;
 use crate::manifest::BackupManifest;
 use crate::utils::commands::{self, CommandError};
+use crate::utils::progress::{dir_size, Progress, ProgressSink};
 
 /// План миграции на целевую карту.
 #[derive(Debug, Clone)]
@@ -39,8 +45,16 @@ pub struct MigrateResult {
 /// Стартовый сектор FAT32-раздела (стандарт SD-карт / Hekate).
 const P1_START: u64 = 2048;
 
+/// Запас места в p2 сверх объёма образа EmuMMC (для Hekate/выравнивания).
+const P2_RESERVE_BYTES: u64 = 512 * 1024 * 1024;
+
+/// Выравнивание размера p2 (сектор 512; 2048 секторов = 1 МиБ).
+const P2_ALIGN_SECTORS: u64 = 2048;
+
 /// Главная функция миграции.
-pub fn run_migrate(plan: &MigratePlan) -> Result<MigrateResult, String> {
+///
+/// `sink` — куда писать прогресс в % (stderr для CLI, канал для TUI).
+pub fn run_migrate(plan: &MigratePlan, sink: ProgressSink) -> Result<MigrateResult, String> {
     let manifest_path = plan.backup_dir.join("manifest.json");
     let manifest =
         BackupManifest::load(&manifest_path).map_err(|e| format!("manifest: {e}"))?;
@@ -74,10 +88,8 @@ pub fn run_migrate(plan: &MigratePlan) -> Result<MigrateResult, String> {
         .map_err(|e| format!("wipefs: {e}"))?;
 
     let total = target.sectors;
-    // Отводим под EmuMMC всё оставшееся после FAT32 + начала.
-    let p1_len = (total - P1_START) / 2;
-    let p2_start = P1_START + p1_len;
-    let p2_len = total - p2_start;
+    // Адаптивная разметка: p2 ровно под образ EmuMMC (+ запас), p1 — всё остальное.
+    let (p1_len, p2_start, p2_len) = adaptive_layout(total, &manifest);
 
     let p1_dev = crate::disk::partition_path(&target.path, 1);
     let p2_dev = crate::disk::partition_path(&target.path, 2);
@@ -123,8 +135,15 @@ device: {dev}
     // ---------- ШАГ 3: разворачиваем EmuMMC ----------
     let image = find_emummc_image(&plan.backup_dir)?;
     // Начинаем с 0-го сектора самого раздела — raw-образ пишем в раздел целиком.
-    let _restored = imaging::restore_emummc(&image, &p2_dev, 0)
+    // Прогресс считаем по объёму распакованных данных (manifest.emummc.size_bytes).
+    let mut emu_progress = Progress::new(
+        sink.clone(),
+        manifest.emummc.size_bytes,
+        "Перенос EmuMMC (zstd → RAW)",
+    );
+    let _restored = imaging::restore_emummc(&image, &p2_dev, 0, &mut emu_progress)
         .map_err(|e| format!("restore: {e}"))?;
+    emu_progress.finish();
 
     // ---------- ШАГ 4-6: копирование sdmc, авто-фикс ini, Fix Archive Bit ----------
     // Монтируем p1 в RW и выполняем всё через замыкание: даже при ошибке ниже
@@ -134,7 +153,15 @@ device: {dev}
     let res = (|| -> Result<(u64, u64, bool), String> {
         let sdmc_src = plan.backup_dir.join("sdmc");
         if sdmc_src.is_dir() {
-            copy_tree(&sdmc_src, &mnt).map_err(|e| format!("copy: {e}"))?;
+            let total = dir_size(&sdmc_src);
+            let mut fat_progress = Progress::new(
+                sink.clone(),
+                total,
+                "Копирование sdmc (FAT32)",
+            );
+            copy_tree(&sdmc_src, &mnt, &mut fat_progress)
+                .map_err(|e| format!("copy: {e}"))?;
+            fat_progress.finish();
         }
 
         // Новый стартовый сектор RAW-раздела для emummc.ini.
@@ -157,6 +184,24 @@ device: {dev}
         emummc_ini_fixed,
         archive_bits_fixed,
     })
+}
+
+/// Вычисляет адаптивную разметку карты: `(p1_len, p2_start, p2_len)` в секторах.
+///
+/// p2 — ровно под образ EmuMMC (+ резерв `P2_RESERVE_BYTES`), округлённый вверх
+/// до `P2_ALIGN_SECTORS`. На картах маленькой ёмкости окно гарантированно не
+/// превышает доступное место (`total - P1_START`); p1 забирает остаток.
+fn adaptive_layout(total: u64, manifest: &BackupManifest) -> (u64, u64, u64) {
+    let emu_sectors = manifest.emummc.size_bytes.div_ceil(512);
+    let need = emu_sectors
+        .saturating_add(P2_RESERVE_BYTES / 512)
+        .div_ceil(P2_ALIGN_SECTORS)
+        * P2_ALIGN_SECTORS;
+    let available = total.saturating_sub(P1_START);
+    let p2_len = need.min(available);
+    let p2_start = P1_START.saturating_add(available - p2_len);
+    let p1_len = p2_start - P1_START;
+    (p1_len, p2_start, p2_len)
 }
 
 /// Применяет mkfs.vfat с 512-байтным сектором и кластером 32 КБ.
@@ -224,24 +269,26 @@ fn find_emummc_image(backup_dir: &Path) -> Result<PathBuf, String> {
     Err("Образ emummc.img.*.zst не найден в папке бэкапа".into())
 }
 
-/// Простая рекурсивная копия дерева каталога.
-fn copy_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
+/// Простая рекурсивная копия дерева каталога (со счётчиком прогресса).
+fn copy_tree(src: &Path, dst: &Path, progress: &mut Progress) -> std::io::Result<u64> {
+    let mut done = 0u64;
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
         let p = entry.path();
         let dst_p = dst.join(entry.file_name());
         if p.is_dir() {
             std::fs::create_dir_all(&dst_p)?;
-            copy_tree(&p, &dst_p)?;
+            done += copy_tree(&p, &dst_p, progress)?;
         } else {
             let mt = entry.metadata()?;
             if mt.is_symlink() {
                 continue;
             }
-            imaging::copy_stream(&p, &dst_p)?;
+            done += imaging::copy_stream(&p, &dst_p)?;
+            progress.report(done);
         }
     }
-    Ok(())
+    Ok(done)
 }
 
 /// Перечитывает таблицу разделов и ЖДЁТ появления узлов разделов.

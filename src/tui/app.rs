@@ -31,6 +31,7 @@ pub enum Screen {
 #[derive(Debug)]
 #[allow(clippy::enum_variant_names)] // имена смысловые: Inspect/Backup/Migrate Done
 pub enum WorkerMsg {
+    Progress(u8),
     InspectDone(Result<InspectResult, String>),
     BackupDone(Result<BackupResult, String>),
     MigrateDone(Result<MigrateResult, String>),
@@ -48,6 +49,7 @@ pub struct App {
     pub backup_dir: Option<PathBuf>,
     pub busy_msg: String,
     pub last_result: String,
+    pub progress_pct: Option<u8>,
 
     rx: Option<mpsc::Receiver<WorkerMsg>>,
     pub busy: bool,
@@ -66,6 +68,7 @@ impl App {
             backup_dir: None,
             busy_msg: String::new(),
             last_result: String::new(),
+            progress_pct: None,
             rx: None,
             busy: false,
             log: Vec::new(),
@@ -174,12 +177,21 @@ impl App {
         self.screen = Screen::Backup;
         self.busy = true;
         self.busy_msg = "Создание полного слепка EmuMMC + FAT32...".to_string();
+        self.progress_pct = None;
 
         let (tx, rx) = mpsc::channel::<WorkerMsg>();
         self.rx = Some(rx);
 
+        let sink_tx = tx.clone();
         thread::spawn(move || {
-            let r = crate::operations::backup::run_backup(plan);
+            let r = crate::operations::backup::run_backup(
+                plan,
+                crate::utils::progress::ProgressSink::Callback(std::sync::Arc::new(
+                    move |pct| {
+                        let _ = sink_tx.send(WorkerMsg::Progress(pct));
+                    },
+                )),
+            );
             let _ = tx.send(WorkerMsg::BackupDone(r));
         });
     }
@@ -226,6 +238,7 @@ impl App {
         self.screen = Screen::Migrate;
         self.busy = true;
         self.busy_msg = format!("Разметка и перенос на {}", target.path.display());
+        self.progress_pct = None;
 
         let plan = MigratePlan {
             target,
@@ -234,69 +247,107 @@ impl App {
         let (tx, rx) = mpsc::channel::<WorkerMsg>();
         self.rx = Some(rx);
 
+        let sink_tx = tx.clone();
         thread::spawn(move || {
-            let r = crate::operations::migrate::run_migrate(&plan);
+            let r = crate::operations::migrate::run_migrate(
+                &plan,
+                crate::utils::progress::ProgressSink::Callback(std::sync::Arc::new(
+                    move |pct| {
+                        let _ = sink_tx.send(WorkerMsg::Progress(pct));
+                    },
+                )),
+            );
             let _ = tx.send(WorkerMsg::MigrateDone(r));
         });
     }
 
     /// Опрос фоновых задач (вызывается каждый кадр).
+    ///
+    /// Обрабатываем все накопившиеся сообщения; операция считается завершённой
+    /// при получении Done-сообщения. Прогрессовые обновления (0..100)
+    /// только обновляют `progress_pct`.
     pub fn poll(&mut self) {
-        if let Some(rx) = &self.rx {
-            if let Ok(msg) = rx.try_recv() {
-                self.apply_worker_msg(msg);
-                self.rx = None;
-                self.busy = false;
+        let mut terminal = false;
+        let mut msgs: Vec<WorkerMsg> = if let Some(rx) = &self.rx {
+            std::iter::from_fn(|| rx.try_recv().ok()).collect()
+        } else {
+            Vec::new()
+        };
+        for msg in msgs.drain(..) {
+            if self.apply_worker_msg(msg) {
+                terminal = true;
             }
+        }
+        if terminal {
+            self.rx = None;
+            self.busy = false;
         }
     }
 
-    fn apply_worker_msg(&mut self, msg: WorkerMsg) {
+    /// Применяет сообщение от фонового потока. Возвращает `true` для
+    /// финальных Done-сообщений (конец операции).
+    fn apply_worker_msg(&mut self, msg: WorkerMsg) -> bool {
         match msg {
-            WorkerMsg::InspectDone(res) => match res {
-                Ok(insp) => {
-                    self.inspect = Some(insp);
-                    self.screen = Screen::Inspect;
-                    self.push_log("Анализ завершён".to_string());
+            WorkerMsg::Progress(pct) => {
+                self.progress_pct = Some(pct.min(100));
+                false
+            }
+            WorkerMsg::InspectDone(res) => {
+                self.progress_pct = None;
+                match res {
+                    Ok(insp) => {
+                        self.inspect = Some(insp);
+                        self.screen = Screen::Inspect;
+                        self.push_log("Анализ завершён".to_string());
+                    }
+                    Err(e) => {
+                        self.last_result = format!("Ошибка анализа: {e}");
+                        self.push_log(self.last_result.clone());
+                        self.screen = Screen::BackupDone;
+                    }
                 }
-                Err(e) => {
-                    self.last_result = format!("Ошибка анализа: {e}");
-                    self.push_log(self.last_result.clone());
-                    self.screen = Screen::BackupDone;
+                true
+            }
+            WorkerMsg::BackupDone(res) => {
+                self.progress_pct = None;
+                match res {
+                    Ok(r) => {
+                        self.backup_dir = Some(r.manifest_path.parent().unwrap().to_path_buf());
+                        self.last_result = format!(
+                            "Бэкап создан: {}\nИгр: {}\nНажмите 3, чтобы перенести на новую карту.",
+                            r.manifest_path.parent().unwrap().display(),
+                            r.total_bytes
+                        );
+                        self.push_log(self.last_result.clone());
+                        self.screen = Screen::BackupDone;
+                    }
+                    Err(e) => {
+                        self.last_result = format!("Ошибка бэкапа: {e}");
+                        self.push_log(self.last_result.clone());
+                        self.screen = Screen::BackupDone;
+                    }
                 }
-            },
-            WorkerMsg::BackupDone(res) => match res {
-                Ok(r) => {
-                    self.backup_dir = Some(r.manifest_path.parent().unwrap().to_path_buf());
-                    self.last_result = format!(
-                        "Бэкап создан: {}\nИгр: {}\nНажмите 3, чтобы перенести на новую карту.",
-                        r.manifest_path.parent().unwrap().display(),
-                        r.total_bytes
-                    );
-                    self.push_log(self.last_result.clone());
-                    self.screen = Screen::BackupDone;
+                true
+            }
+            WorkerMsg::MigrateDone(res) => {
+                self.progress_pct = None;
+                match res {
+                    Ok(r) => {
+                        self.last_result = format!(
+                            "Миграция завершена.\nНовый sector EmuMMC: {}\nemummc.ini исправлен: {}\nArchive bits: {}",
+                            r.new_emu_start, r.emummc_ini_fixed, r.archive_bits_fixed
+                        );
+                        self.push_log(self.last_result.clone());
+                        self.screen = Screen::MigrateDone;
+                    }
+                    Err(e) => {
+                        self.last_result = format!("Ошибка миграции: {e}");
+                        self.push_log(self.last_result.clone());
+                        self.screen = Screen::MigrateDone;
+                    }
                 }
-                Err(e) => {
-                    self.last_result = format!("Ошибка бэкапа: {e}");
-                    self.push_log(self.last_result.clone());
-                    self.screen = Screen::BackupDone;
-                }
-            },
-            WorkerMsg::MigrateDone(res) => match res {
-                Ok(r) => {
-                    self.last_result = format!(
-                        "Миграция завершена.\nНовый sector EmuMMC: {}\nemummc.ini исправлен: {}\nArchive bits: {}",
-                        r.new_emu_start, r.emummc_ini_fixed, r.archive_bits_fixed
-                    );
-                    self.push_log(self.last_result.clone());
-                    self.screen = Screen::MigrateDone;
-                }
-                Err(e) => {
-                    self.last_result = format!("Ошибка миграции: {e}");
-                    self.push_log(self.last_result.clone());
-                    self.screen = Screen::MigrateDone;
-                }
-            },
+                true
+            }
         }
     }
 }

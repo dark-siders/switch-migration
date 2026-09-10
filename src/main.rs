@@ -120,8 +120,11 @@ fn cmd_backup(dev: Option<&String>, out: Option<&String>) -> std::io::Result<()>
         out_dir,
         games: insp.games,
     };
-    let res = or_die(operations::backup::run_backup(plan));
-    println!("{res}");
+    let res = or_die(operations::backup::run_backup(
+        plan,
+        utils::progress::ProgressSink::Stderr,
+    ));
+    println!("\r{res}");
     Ok(())
 }
 
@@ -137,9 +140,12 @@ fn cmd_migrate(backup: Option<&String>, target: Option<&String>) -> std::io::Res
         target: bd,
         backup_dir: PathBuf::from(backup.as_str()),
     };
-    let res = or_die(operations::migrate::run_migrate(&plan));
+    let res = or_die(operations::migrate::run_migrate(
+        &plan,
+        utils::progress::ProgressSink::Stderr,
+    ));
     println!(
-        "Готово: новый sector={}, emummc.ini исправлен: {}, archive bits: {}",
+        "\rГотово: новый sector={}, emummc.ini исправлен: {}, archive bits: {}",
         res.new_emu_start, res.emummc_ini_fixed, res.archive_bits_fixed
     );
     Ok(())

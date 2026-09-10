@@ -23,6 +23,8 @@ const NEW_SIZE_SECTORS: u64 = 16_777_216; // 8 ГБ
 const P1_START: u64 = 2048;
 const OLD_P1_LEN: u64 = 32_768; // 16 МБ FAT16 на «старой» карте
 const OLD_P2_START: u64 = P1_START + OLD_P1_LEN;
+const P2_RESERVE_BYTES: u64 = 512 * 1024 * 1024; // 0.5 ГиБ — как в migrate.rs
+const P2_ALIGN_SECTORS: u64 = 2048;                // 1 МиБ — как в migrate.rs
 
 /// Убеждаемся, что тест можно запускать (root, loop-control, утилиты).
 /// Если нет — печатаем причину и возвращаем `false` (тест тихо пропускается).
@@ -325,10 +327,6 @@ fn full_migration_loop() {
         f.flush().unwrap();
     }
 
-    // Ожидаемая длина EmuMMC-раздела (секторов) по MBR старой карты.
-    let emu_len_sectors = OLD_SIZE_SECTORS - OLD_P2_START;
-    let emu_bytes = emu_len_sectors * 512;
-
     // ---- 5. ls + probe + backup + apply ----
     let ls_out = migrator(&["--allow-loop", "ls"]);
     assert!(
@@ -368,9 +366,16 @@ fn full_migration_loop() {
     );
 
     // ---- 6. Проверки новой карты ----
-    // Ожидаемая геометрия новой карты (та же формула, что в migrate.rs).
-    let new_p1_len = (NEW_SIZE_SECTORS - P1_START) / 2;
-    let new_p2_start = P1_START + new_p1_len;
+    // Ожидаемая геометрия новой карты — адаптивная разметка (как в migrate.rs).
+    let emu_len_sectors = OLD_SIZE_SECTORS - OLD_P2_START;
+    let emu_bytes = emu_len_sectors * 512;
+    let need = emu_len_sectors
+        .saturating_add(P2_RESERVE_BYTES / 512)
+        .div_ceil(P2_ALIGN_SECTORS)
+        * P2_ALIGN_SECTORS;
+    let available = NEW_SIZE_SECTORS - P1_START;
+    let new_p2_len = need.min(available);
+    let new_p2_start = P1_START + (available - new_p2_len);
 
     // Таблица разделов: парсим численно — sfdisk выравнивает числа пробелами.
     let table = run("sfdisk", &["-d", &new_loop]);

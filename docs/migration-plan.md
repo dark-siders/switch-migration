@@ -84,9 +84,11 @@
    /dev/sdc2 : start=<P2>,  size<P2>, type=27
    ```
    где:
-   - `P1 = (total - 2048)/2` — «данные» (аналогично исходной карте);
-   - `P2 = total - P1_START - P1` — RAW EmuMMC;
-   - `P2_START = 2048 + P1` — **новое значение `sector=` для `emummc.ini`**;
+   - `P2_LEN` — **адаптивно**: ровно под образ EmuNAND из манифеста
+     (`manifest.emummc.size_bytes`) + запас 0.5 ГиБ, округление до 1 МиБ;
+- `P2_START = 2048 + P1`, где `P1 = TOTAL - P1_START - P2_LEN` — FAT32
+      забирает всё остальное (на 512 ГиБ это 470 ГиБ вместо ~239);
+   - `P2_START` — **новое значение `sector=` для `emummc.ini`**;
    - тип p2 — `0x27` (скрытый RAW), НЕ `0x0C`: иначе анализатор снова сочтёт
      p2 за FAT32 и не найдет EmuMMC при повторном анализе после миграции.
 
@@ -127,27 +129,31 @@
     - вывод итого: `новый sector=<P2_START>`, `emummc.ini исправлен=true`,
       `archive bits: <N>`.
 
-## Расчёт секторов (формулы)
+## Расчёт секторов (формулы — адаптивная разметка)
 
 ```
 SECTOR = 512 байт
-
 P1_START = 2048
-P1_LEN   = (TOTAL_SECTORS - P1_START) / 2
-P2_START = P1_START + P1_LEN
-P2_LEN   = TOTAL_SECTORS - P2_START
+RESERVE_BYTES = 0.5 ГиБ            # запас p2 поверх образа (для Hekate)
+ALIGN_SECTORS = 2048               # кратность 1 МиБ
+
+NEED      = ceil( manifest.emummc.size_bytes/512 + RESERVE_BYTES/512
+                                                          , ALIGN_SECTORS )*ALIGN_SECTORS
+P2_LEN    = min(NEED, TOTAL_SECTORS - P1_START)
+P2_START  = P1_START + (TOTAL_SECTORS - P1_START - P2_LEN)
+P1_LEN    = P2_START - P1_START
 
 # В emummc.ini:
 sector = P2_START            # десятичная или 0x… (сохраняем стиль исходного)
 ```
 
-> 📌 **Переразметка «мин. EmuNAND» (план, 2026-09-10):** сейчас p2 забирает
-> половину карты (~239 ГиБ на 512 ГиБ), хотя весь образ EmuNAND ≈ 7.5 ГиБ
-> (`manifest.emummc.size_bytes`), остальное — пустой резерв. Планируется:
-> `P2_LEN` считать по размеру образа из manifest + запас (~8 ГиБ, кратность
-> секторов), всё остальное отдать `P1` (~435 ГиБ). Затем разовый
-> `fix_archive_bit` в Hekate. Код `archive.rs` не правим. (Детали — в
-> `agent.md`, §п.7 «Переразметка карты 512 ГиБ — ПЛАН».)
+> ✅ **Адаптивная разметка «мин. EmuNAND» (реализовано, 2026-09-10):**
+> p2 теперь занимает ровно столько, сколько нужно под образ EmuNAND
+> (`manifest.emummc.size_bytes` ≈ 7.5 ГиБ) + запас 0.5 ГиБ, а не половину карты.
+> На карте 512 ГиБ (реально 477.5 ГиБ) FAT32 получает 470 ГиБ вместо ~239,
+> p2 = 7.51 ГиБ. Проверено на реальном Switch: DBI «SD 433/470».
+> После apply на Switch — разовый `fix_archive_bit` в Hekate (см. шаг 10).
+> Код `archive.rs` не правим.
 
 ## Диаграмма состояний
 

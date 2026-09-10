@@ -13,6 +13,7 @@ use crate::disk::partition::EmuGeometry;
 use crate::disk::BlockDevice;
 use crate::emummc::imaging;
 use crate::manifest::{BackupManifest, EmuSection, Fat32Section, GameEntry};
+use crate::utils::progress::{dir_size, Progress, ProgressSink};
 
 use super::inspect::mount_readonly;
 
@@ -56,7 +57,9 @@ impl std::fmt::Display for BackupResult {
 }
 
 /// Главная функция: выполняет бэкап по плану.
-pub fn run_backup(plan: BackupPlan) -> Result<BackupResult, String> {
+///
+/// `sink` — куда писать прогресс в % (stderr для CLI, канал для TUI).
+pub fn run_backup(plan: BackupPlan, sink: ProgressSink) -> Result<BackupResult, String> {
     let out = &plan.out_dir;
     std::fs::create_dir_all(out).map_err(|e| e.to_string())?;
 
@@ -70,7 +73,11 @@ pub fn run_backup(plan: BackupPlan) -> Result<BackupResult, String> {
     if fat_part.exists() {
         match mount_readonly(&fat_part) {
             Ok(mnt) => {
-                copy_tree(&mnt, &data_dir).map_err(|e| format!("copy sdmc: {e}"))?;
+                let total = dir_size(&mnt);
+                let mut progress = Progress::new(sink.clone(), total, "Бэкап sdmc (FAT32)");
+                copy_tree(&mnt, &data_dir, &mut progress)
+                    .map_err(|e| format!("copy sdmc: {e}"))?;
+                progress.finish();
                 let _ = crate::utils::commands::run_capture("umount", &[mnt.to_str().unwrap()]);
             }
             Err(e) => {
@@ -89,9 +96,12 @@ pub fn run_backup(plan: BackupPlan) -> Result<BackupResult, String> {
         if part_dev.exists() {
             let img_path = out.join(format!("emummc.img.{data_start}.zst"));
             let offset = data_start - emu.emu_start;
-            let progress = imaging::ProgressHandle::none();
-            let done = imaging::dump_emummc(&part_dev, offset, data_len, &img_path, &progress)
-                .map_err(|e| format!("dump: {e}"))?;
+            let total = data_len * 512;
+            let mut progress = Progress::new(sink, total, "Бэкап EmuMMC (RAW → zstd)");
+            let done =
+                imaging::dump_emummc(&part_dev, offset, data_len, &img_path, &mut progress)
+                    .map_err(|e| format!("dump: {e}"))?;
+            progress.finish();
             img_bytes = done;
             emu_image = Some(img_path);
         }
@@ -156,22 +166,26 @@ fn resolve_dump_window(emu: &EmuGeometry, sdmc: &Path) -> (u64, u64) {
 }
 
 /// Копирует содержимое одного каталога в другой (простая рекурсия).
-fn copy_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
+///
+/// Отчитывается о прогресс в `Progress` по мере копирования.
+fn copy_tree(src: &Path, dst: &Path, progress: &mut Progress) -> std::io::Result<u64> {
+    let mut done = 0u64;
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
         let p = entry.path();
         let dst_p = dst.join(entry.file_name());
         if p.is_dir() {
             std::fs::create_dir_all(&dst_p)?;
-            copy_tree(&p, &dst_p)?;
+            done += copy_tree(&p, &dst_p, progress)?;
         } else {
             if entry.metadata()?.is_symlink() {
                 continue;
             }
-            crate::emummc::imaging::copy_stream(&p, &dst_p)?;
+            done += crate::emummc::imaging::copy_stream(&p, &dst_p)?;
+            progress.report(done);
         }
     }
-    Ok(())
+    Ok(done)
 }
 
 #[cfg(test)]

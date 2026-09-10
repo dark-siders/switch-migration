@@ -7,7 +7,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, Clear, Gauge, List, ListItem, ListState, Paragraph},
 };
 
 use crate::utils::human::human_bytes;
@@ -163,10 +163,36 @@ fn draw_inspect(frame: &mut Frame, app: &App) {
 }
 
 fn draw_busy(frame: &mut Frame, app: &App) {
-    let p = Paragraph::new(app.busy_msg.clone())
-        .alignment(Alignment::Center)
-        .block(Block::default().borders(Borders::ALL).title("Выполняется"));
-    frame.render_widget(p, frame.area());
+    let area = frame.area();
+    if let Some(pct) = app.progress_pct {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(3)])
+            .split(area);
+
+        let msg = Paragraph::new(app.busy_msg.clone())
+            .alignment(Alignment::Center)
+            .block(Block::default().borders(Borders::ALL).title("Выполняется"));
+        frame.render_widget(msg, chunks[0]);
+
+        let label = format!("{}%", pct);
+        let gauge = Gauge::default()
+            .block(Block::default().borders(Borders::ALL))
+            .gauge_style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .bg(Color::Black)
+                    .add_modifier(Modifier::ITALIC),
+            )
+            .ratio(f64::from(pct) / 100.0)
+            .label(label);
+        frame.render_widget(gauge, chunks[1]);
+    } else {
+        let p = Paragraph::new(app.busy_msg.clone())
+            .alignment(Alignment::Center)
+            .block(Block::default().borders(Borders::ALL).title("Выполняется"));
+        frame.render_widget(p, area);
+    }
 }
 
 fn draw_done(frame: &mut Frame, app: &App) {

@@ -13,8 +13,9 @@ use std::fs::File;
 use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
-use indicatif::{ProgressBar, ProgressStyle};
 use thiserror::Error;
+
+use crate::utils::progress::Progress;
 
 /// Размер блока в байтах при копировании/сжатии.
 pub const BLOCK_SIZE: usize = 4 * 1024 * 1024;
@@ -38,13 +39,13 @@ pub enum ImagingError {
 /// - `start_sector` — стартовый сектор EmuMMC в устройстве.
 /// - `num_sectors` — количество секторов для чтения.
 /// - `out_zst` — путь к результирующему `.img.zst` файлу.
-/// - `progress` — необязательный прогресс-бар (indicatif).
+/// - `progress` — отчёт прогресса (печатает % в stderr / шлёт в канал TUI).
 pub fn dump_emummc(
     src_dev: &Path,
     start_sector: u64,
     num_sectors: u64,
     out_zst: &Path,
-    progress: &ProgressHandle,
+    progress: &mut Progress,
 ) -> Result<u64, ImagingError> {
     let mut src = File::open(src_dev)?;
     src.seek(SeekFrom::Start(start_sector * 512))?;
@@ -74,58 +75,12 @@ pub fn dump_emummc(
         }
         zst.write_all(&buffer[..want])?;
         read_bytes += want as u64;
-        progress.set(read_bytes);
+        progress.report(read_bytes);
     }
 
     zst.finish()?;
     writer.flush()?;
     Ok(read_bytes)
-}
-
-/// Функция-помощник для создания прогресса (убираем дублирование кода).
-#[allow(dead_code)]
-fn make_progress(len_bytes: u64, label: &str) -> Option<ProgressBar> {
-    // progress-бар создаётся вызывающей стороной; здесь — заглушка для читаемости.
-    let pb = ProgressBar::new(len_bytes);
-    pb.set_style(
-        ProgressStyle::with_template(
-            "{msg} [{bar:40.cyan/blue}] {percent:>3}%  {bytes}/{total_bytes}  {eta}",
-        )
-        .unwrap()
-        .progress_chars("=>-"),
-    );
-    pb.set_message(label.to_string());
-    Some(pb)
-}
-
-/// Прогресс-бар для вызова снаружи.
-#[derive(Clone)]
-pub struct ProgressHandle {
-    pb: Option<ProgressBar>,
-}
-
-impl ProgressHandle {
-    #[allow(dead_code)]
-    pub fn none() -> Self {
-        ProgressHandle { pb: None }
-    }
-    #[allow(dead_code)]
-    pub fn new(len_bytes: u64, label: &str) -> Self {
-        ProgressHandle {
-            pb: make_progress(len_bytes, label),
-        }
-    }
-    pub fn set(&self, pos: u64) {
-        if let Some(p) = &self.pb {
-            p.set_position(pos);
-        }
-    }
-    #[allow(dead_code)]
-    pub fn finish(&self) {
-        if let Some(p) = &self.pb {
-            p.finish_with_message("Готово");
-        }
-    }
 }
 
 /// Восстановление zstd-образа обратно в RAW-раздел.
@@ -134,10 +89,14 @@ impl ProgressHandle {
 /// - `zst_path` — сжатый образ.
 /// - `dest_dev` — блочное устройство раздела назначения (например `/dev/sdc2`).
 /// - `dest_start_sector` — стартовый сектор нового RAW-раздела.
+/// - `total_bytes` — ожидаемый объём данных после распаковки (`num_sectors * 512`),
+///   нужен для процентов прогресса.
+/// - `progress` — отчёт прогресса.
 pub fn restore_emummc(
     zst_path: &Path,
     dest_dev: &Path,
     dest_start_sector: u64,
+    progress: &mut Progress,
 ) -> Result<u64, ImagingError> {
     let in_file = File::open(zst_path)?;
     let reader = BufReader::new(in_file);
@@ -155,6 +114,7 @@ pub fn restore_emummc(
         }
         dest.write_all(&buffer[..n])?;
         written += n as u64;
+        progress.report(written);
     }
     dest.flush()?;
     Ok(written)
