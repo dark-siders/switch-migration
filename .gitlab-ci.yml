@@ -1,0 +1,114 @@
+---
+# CI для switch-migrator (GitLab).
+#
+# Джобы:
+#   flake-check     — валидация Nix-flake (flake show / flake check)
+#   static-release  — статический musl-бинарь для обычных дистрибутивов
+#                     (Fedora/Ubuntu/Mint/Arch/ALT и пр.), публикуется артефактом.
+#   distro-smoke    — матрица: тот же бинарь + набор рантайм-утилит
+#                     проверяются на базовых дистрибутивах (Debian, Ubuntu,
+#                     Fedora, Arch, openSUSE, Void).
+stages:
+  - check
+  - release
+  - smoke
+
+image: nixos/nix:latest
+
+variables:
+  # Ветки + merge requests (любые коммиты), чтобы артефакт обновлялся всегда.
+  GIT_STRATEGY: clone
+
+flake-check:
+  stage: check
+  before_script:
+    - echo "experimental-features = nix-command flakes" >> /etc/nix/nix.conf
+  script:
+    - nix flake show --all-systems
+    - nix flake check --no-build --all-systems
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH'
+    - if: '$CI_COMMIT_TAG'
+
+static-release:
+  stage: release
+  image: rust:latest
+  variables:
+    # Особое имя target, чтобы не пересекаться с работой хост-сборки.
+    CARGO_TARGET_DIR: target-ci
+  before_script:
+    - apt-get update -qq
+    - apt-get install -y -qq musl-tools file
+    - rustup target add x86_64-unknown-linux-musl
+  script:
+    - cargo build --release --target x86_64-unknown-linux-musl
+    - cp target-ci/x86_64-unknown-linux-musl/release/switch-migrator switch-migrator-x86_64
+    - file switch-migrator-x86_64
+    - md5sum switch-migrator-x86_64
+  artifacts:
+    name: "switch-migrator-x86_64-$CI_COMMIT_SHORT_SHA"
+    paths:
+      - switch-migrator-x86_64
+    expire_in: 30 days
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH'
+    - if: '$CI_COMMIT_TAG'
+
+.distro_smoke_base: &distro_smoke_base
+  stage: smoke
+  # Забирает статический бинарь из прошлой стадии (пакет 'archive').
+  dependencies:
+    - static-release
+  script:
+    # 1) Бинарь обучен работать без зависимостей — проверяем запуск.
+    - ./switch-migrator-x86_64 ls
+    # 2) Рантайм-утилиты должны быть на месте (имена пакетов различаются).
+    - |
+      for tool in sfdisk wipefs partprobe partx mkfs.vfat mount umount blockdev dd sync which; do
+        if ! command -v "$tool" >/dev/null 2>&1; then
+          echo "MISSING tool: $tool"
+          exit 1
+        fi
+      done
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH'
+    - if: '$CI_COMMIT_TAG'
+
+distro-smoke-debian:
+  <<: *distro_smoke_base
+  image: debian:stable-slim
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq util-linux dosfstools debianutils
+
+distro-smoke-ubuntu:
+  <<: *distro_smoke_base
+  image: ubuntu:24.04
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq util-linux dosfstools debianutils
+
+distro-smoke-fedora:
+  <<: *distro_smoke_base
+  image: fedora:latest
+  before_script:
+    - dnf install -y util-linux dosfstools which
+
+distro-smoke-arch:
+  <<: *distro_smoke_base
+  image: archlinux:latest
+  before_script:
+    - pacman -Syu --noconfirm util-linux dosfstools which
+
+distro-smoke-opensuse:
+  <<: *distro_smoke_base
+  image: opensuse/tumbleweed:latest
+  before_script:
+    - zypper --non-interactive install util-linux dosfstools which
+
+distro-smoke-void:
+  <<: *distro_smoke_base
+  image: voidlinux/voidlinux:latest
+  before_script:
+    - xbps-install -Syu -y util-linux dosfstools which

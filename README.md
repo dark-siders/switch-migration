@@ -16,9 +16,8 @@
 - **Анализ карты**: таблица разделов, скрытый RAW-раздел EmuMMC, список игр
   (`Nintendo/Contents/registered`) и **homebrew** (`switch/*.nro`).
   ⚠️ Список игр работает на картах со стандартной PC-структурой
-  (`registered/<titleid>/<hash>.nca`); на эму-conтент-сторе с индексами
-  `000000xx` игры показываются как 0 (см. «Известные ограничения и TODO»
-  в `agent.md`).
+  (`registered/<titleid>/<hash>.nca`); на эму-контент-сторе с индексами
+  `000000xx` игры показываются как 0 (см. [«Известные ограничения и TODO»](agent.md)).
 - **Дамп EmuMMC** в сжатый образ (`emummc.img.<sector>.zst`, zstd на лету) —
   пустые секторы не занимают места. Дамп берёт **реальное окно данных** из
   `emuMMC/emummc.ini` (Hekate резервирует заголовок/выравнивание внутри
@@ -43,19 +42,19 @@
 
 ```bash
 # Запуск TUI
-nix run .#x86_64-linux
+nix run .
 
 # Список безопасных накопителей (CLI)
-nix run .#x86_64-linux -- ls
+nix run . -- ls
 
 # Анализ конкретной карты
-nix run .#x86_64-linux -- probe /dev/sdb
+nix run . -- probe /dev/sdb
 
 # Полный бэкап в папку
-nix run .#x86_64-linux -- backup /dev/sdb --out ~/switch-backup
+nix run . -- backup /dev/sdb --out ~/switch-backup
 
 # Миграция из существующего бэкапа на новую карту
-nix run .#x86_64-linux -- apply ~/switch-backup /dev/sdc
+nix run . -- apply ~/switch-backup /dev/sdc
 ```
 
 Отладка / разработка:
@@ -78,14 +77,16 @@ sudo ./target/release/switch-migrator
 ## UX «в 2 клика»
 
 ### Клик 1 — Бэкап
+
 1. Вставьте **старую** SD-карту (кардридер или USB-ридер).
 2. TUI покажет её в списке → **Enter**.
 3. Инструмент сам находит FAT32 и скрытый RAW-раздел EmuMMC, показывает
    игры и homebrew. ⚠️ Список игр может быть пуст на эму-контент-сторе с
-   индексами `000000xx` (см. «Возможности»).
+   индексами `000000xx` (см. [«Возможности»](#возможности)).
 4. **`1`** → создаётся слепок: `manifest.json` + `emummc.img.*.zst` + `sdmc/`.
 
 ### Клик 2 — Миграция
+
 1. Выньте старую карту, вставьте **новую** (свободнее по объёму).
 2. **`3`** → выберите новую карту в списке → **Enter**.
 3. Инструмент:
@@ -101,7 +102,7 @@ sudo ./target/release/switch-migrator
 
 ## Архитектура
 
-```
+```text
 src/
 ├── main.rs              # точка входа, CLI-режимы, TUI-loop
 ├── disk/
@@ -126,7 +127,7 @@ src/
     └── human.rs         # человекочитаемые размеры
 ```
 
-Подробнее об алгоритмах см. **docs/architecture.md** и **docs/migration-plan.md**.
+Подробнее об алгоритмах см. [docs/architecture.md](docs/architecture.md) и [docs/migration-plan.md](docs/migration-plan.md).
 
 ## Safety Guard
 
@@ -145,12 +146,53 @@ src/
 `sfdisk`, `wipefs`, `partprobe`, `partx`, `parted`, `mkfs.vfat`, `mount`, `umount`,
 `blockdev`, `dd`, `sync`, `zstd`, `which`. Никаких зашитых путей вроде `/usr/bin/`.
 
+## Сборка и запуск без Nix (обычные дистрибутивы)
+
+`nix build`/`nix run` собирают бинарь, привязанный к `/nix/store`, — он
+**не запустится** на Fedora/Ubuntu/Mint/ALT/Arch. Для обычных дистрибутивов
+собираем **статический musl-бинарь** — один файл, работает на любом x86_64 Linux
+(в коде нет openssl/сетевых-крейтов, все системные утилиты вызываются по PATH).
+
+```bash
+# 1. Инструменты + рантайм-утилиты
+# Fedora/RHEL/Rocky/AlmaLinux/Nobara:  sudo dnf install util-linux dosfstools
+# Ubuntu/Mint/Debian:   sudo apt install util-linux dosfstools
+# Arch/Manjaro/EndeavourOS/CachyOS/Garuda:
+#                        sudo pacman -S util-linux dosfstools
+# openSUSE Leap/Tumbleweed:
+#                        sudo zypper install util-linux dosfstools
+# Void:                 sudo xbps-install util-linux dosfstools
+# Gentoo:               sudo emerge --ask sys-apps/util-linux sys-fs/dosfstools
+# ALT:                  sudo apt-get install util-linux dosfstools
+#   (sfdisk/wipefs/partprobe/partx/mount/blockdev — util-linux;
+#    mkfs.vfat — dosfstools; udevadm/systemd есть везде; zstd не обязателен)
+
+# 2. Rust (если ещё нет): https://rustup.rs
+
+# 3. Статическая сборка
+rustup target add x86_64-unknown-linux-musl
+cargo build --release --target x86_64-unknown-linux-musl
+file target/x86_64-unknown-linux-musl/release/switch-migrator
+#   → "statically linked" — значит готово
+
+# 4. Запуск (запись/монтирование — только root, как и на NixOS)
+sudo ./target/x86_64-unknown-linux-musl/release/switch-migrator
+```
+
+Альтернатива без `rustup target` — [`cargo-zigbuild`](https://github.com/rust-cross/cargo-zigbuild)
+(требует `zig`, в гите для Debian/Ubuntu/Fedora/Arch есть готовые пакеты).
+Готовый статический бинарь публикуется как артефакт GitLab CI
+(см. `.gitlab-ci.yml`, стадия `static-release`), а `distro-smoke` проверяет
+бинарь + рантайм-утилиты на базовых образах Debian/Ubuntu/Fedora/Arch/
+openSUSE/Void.
+
 ## Тестирование
 
 ### Юнит-тесты и статика (без реальных дисков)
 
 ```bash
-cargo test               # 15 юнит-тестов (detect, ini, dump-window, partition_path…)
+cargo test               # 20 юнит-тестов (detect, ini, dump-window, partition_path,
+                         #   titles, homebrew…) + 2 e2e-loop (под root)
 cargo clippy             # без предупреждений
 nix flake check --no-build --all-systems
 ```
@@ -158,8 +200,9 @@ nix flake check --no-build --all-systems
 ### E2E на loop-дисках (без SD, но нужен root)
 
 > **Статус реализации:**
+>
 > - **Level 0 (loop-диски): пройден.** E2E-цикл «бэкап → миграция → сверка»
->   зелёный (2 теста-бинаря + 15 юнитов, clippy 0).
+>   зелёный (2 теста-бинаря + 20 юнитов, clippy 0).
 > - **Level 1: пройден на РЕАЛЬНЫХ данных, включая реальный apply.**
 >   Основная карта 128 ГиБ (встроенный кардридер) прошла `ls` → `probe` →
 >   `backup`; бэкап развёрнут через `apply` на **физическую карту 512 ГиБ**
@@ -199,7 +242,12 @@ sudo cargo test --test e2e_loop   # без root — тихо пропускае�
 ```
 
 Запуск без записи в `target` под root: собрать `cargo test --test e2e_loop --no-run`,
-затем `sudo TMPDIR=/var/tmp/sm-e2e nix develop -c target/debug/deps/e2e_loop-<hash> --nocapture`
+
+```text
+sudo TMPDIR=/var/tmp/sm-e2e nix develop -c \
+  target/debug/deps/e2e_loop-<hash> --nocapture
+```
+
 (образы ~8.5 ГиБ в tmpfs не влезают; после прогона — почистить
 `losetup -d` и `/var/tmp/sm-e2e`, подробности в `agent.md` §0.2).
 
