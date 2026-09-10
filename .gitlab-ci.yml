@@ -62,16 +62,9 @@ static-release:
   dependencies:
     - static-release
   script:
-    # 1) Бинарь обучен работать без зависимостей — проверяем запуск.
-    - ./switch-migrator-x86_64 ls
-    # 2) Рантайм-утилиты должны быть на месте (имена пакетов различаются).
-    - |
-      for tool in sfdisk wipefs partprobe partx mkfs.vfat mount umount blockdev dd sync which; do
-        if ! command -v "$tool" >/dev/null 2>&1; then
-          echo "MISSING tool: $tool"
-          exit 1
-        fi
-      done
+    # Логика вынесена в отдельный POSIX-sh скрипт: он не зависит от того,
+    # какой шелл поднимает GitLab-runner в образе (Void — без bash, только dash).
+    - sh ci/distro_smoke.sh ./switch-migrator-x86_64
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_BRANCH'
