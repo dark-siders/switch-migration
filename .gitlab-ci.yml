@@ -79,36 +79,40 @@ static-release:
 
 distro-smoke-debian:
   <<: *distro_smoke_base
+  # fdisk (в trixie sfdisk вынесен из util-linux) и parted (partprobe) —
+  # нужны, иначе smoke падает на первом отсутствующем инструменте.
   image: debian:stable-slim
   before_script:
-    - apt-get update -qq && apt-get install -y -qq util-linux dosfstools debianutils
+    - apt-get update -qq
+    - apt-get install -y -qq util-linux fdisk parted dosfstools debianutils
 
 distro-smoke-ubuntu:
   <<: *distro_smoke_base
   image: ubuntu:24.04
   before_script:
-    - apt-get update -qq && apt-get install -y -qq util-linux dosfstools debianutils
+    - apt-get update -qq
+    - apt-get install -y -qq util-linux fdisk parted dosfstools debianutils
 
 distro-smoke-fedora:
   <<: *distro_smoke_base
   image: fedora:latest
   before_script:
-    - dnf install -y util-linux dosfstools which
+    - dnf install -y util-linux parted dosfstools which
 
 distro-smoke-arch:
   <<: *distro_smoke_base
   image: archlinux:latest
   before_script:
-    - pacman -Syu --noconfirm util-linux dosfstools which
+    - pacman -Syu --noconfirm util-linux parted dosfstools which
 
 distro-smoke-opensuse:
   <<: *distro_smoke_base
   image: opensuse/tumbleweed:latest
   before_script:
-    - zypper --non-interactive install util-linux dosfstools which
+    - zypper --non-interactive install util-linux parted dosfstools which
 
 distro-smoke-void:
   <<: *distro_smoke_base
   image: voidlinux/voidlinux:latest
   before_script:
-    - xbps-install -Syu -y util-linux dosfstools which
+    - xbps-install -Syu -y util-linux parted dosfstools which

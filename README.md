@@ -155,16 +155,18 @@ src/
 
 ```bash
 # 1. Инструменты + рантайм-утилиты
-# Fedora/RHEL/Rocky/AlmaLinux/Nobara:  sudo dnf install util-linux dosfstools
-# Ubuntu/Mint/Debian:   sudo apt install util-linux dosfstools
+#   Части пакетов разъехались по дистрибутивам:
+#   sfdisk — в отдельном пакете fdisk (Debian 13+/Ubuntu), partprobe — в parted.
+# Fedora/RHEL/Rocky/AlmaLinux/Nobara:  sudo dnf install util-linux parted dosfstools
+# Ubuntu/Mint/Debian:   sudo apt install util-linux fdisk parted dosfstools
 # Arch/Manjaro/EndeavourOS/CachyOS/Garuda:
-#                        sudo pacman -S util-linux dosfstools
+#                        sudo pacman -S util-linux parted dosfstools
 # openSUSE Leap/Tumbleweed:
-#                        sudo zypper install util-linux dosfstools
-# Void:                 sudo xbps-install util-linux dosfstools
-# Gentoo:               sudo emerge --ask sys-apps/util-linux sys-fs/dosfstools
-# ALT:                  sudo apt-get install util-linux dosfstools
-#   (sfdisk/wipefs/partprobe/partx/mount/blockdev — util-linux;
+#                        sudo zypper install util-linux parted dosfstools
+# Void:                 sudo xbps-install util-linux parted dosfstools
+# Gentoo:               sudo emerge --ask sys-apps/util-linux sys-block/parted sys-fs/dosfstools
+# ALT:                  sudo apt-get install util-linux fdisk parted dosfstools
+#   (sfdisk/wipefs/partprobe/partx/mount/blockdev — util-linux+fdisk+parted;
 #    mkfs.vfat — dosfstools; udevadm/systemd есть везде; zstd не обязателен)
 
 # 2. Rust (если ещё нет): https://rustup.rs
