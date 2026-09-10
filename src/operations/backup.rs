@@ -12,10 +12,10 @@ use std::path::{Path, PathBuf};
 use crate::disk::partition::EmuGeometry;
 use crate::disk::BlockDevice;
 use crate::emummc::imaging;
-use crate::manifest::{BackupManifest, EmuSection, Fat32Section, GameEntry};
+use crate::manifest::{BackupManifest, EmuSection, Fat32Section, GameEntry, HomebrewEntry};
 use crate::utils::progress::{dir_size, Progress, ProgressSink};
 
-use super::inspect::mount_readonly;
+use super::inspect::mount_fat32;
 
 /// План, подготовленный перед началом копирования.
 #[derive(Debug, Clone)]
@@ -24,11 +24,7 @@ pub struct BackupPlan {
     pub emu: Option<EmuGeometry>,
     pub out_dir: PathBuf,
     pub games: Vec<GameEntry>,
-}
-
-/// Папка по умолчанию для бэкапа (переживающая перезапуск, в временной папке ОС).
-pub fn default_backup_dir() -> PathBuf {
-    std::env::temp_dir().join(format!("switch-migrator-backup-{}", std::process::id()))
+    pub homebrew: Vec<HomebrewEntry>,
 }
 
 /// Итог бэкапа.
@@ -71,14 +67,16 @@ pub fn run_backup(plan: BackupPlan, sink: ProgressSink) -> Result<BackupResult, 
 
     let fat_part = crate::disk::partition_path(&plan.source.path, 1);
     if fat_part.exists() {
-        match mount_readonly(&fat_part) {
-            Ok(mnt) => {
+        match mount_fat32(&fat_part) {
+            Ok((mnt, owned)) => {
                 let total = dir_size(&mnt);
                 let mut progress = Progress::new(sink.clone(), total, "Бэкап sdmc (FAT32)");
                 copy_tree(&mnt, &data_dir, &mut progress)
                     .map_err(|e| format!("copy sdmc: {e}"))?;
                 progress.finish();
-                let _ = crate::utils::commands::run_capture("umount", &[mnt.to_str().unwrap()]);
+                if owned {
+                    let _ = crate::utils::commands::run_capture("umount", &[mnt.to_str().unwrap()]);
+                }
             }
             Err(e) => {
                 return Err(format!("Не удалось смонтировать FAT32: {e}"));
@@ -131,6 +129,7 @@ pub fn run_backup(plan: BackupPlan, sink: ProgressSink) -> Result<BackupResult, 
         fat32_section,
         plan.games.clone(),
     );
+    manif.homebrew = plan.homebrew.clone();
     manif.image_zst_bytes = img_bytes;
     let mpath = out.join("manifest.json");
     manif.save(&mpath).map_err(|e| e.to_string())?;

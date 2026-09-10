@@ -119,6 +119,7 @@ fn cmd_backup(dev: Option<&String>, out: Option<&String>) -> std::io::Result<()>
         emu: insp.emummc,
         out_dir,
         games: insp.games,
+        homebrew: insp.homebrew,
     };
     let res = or_die(operations::backup::run_backup(
         plan,

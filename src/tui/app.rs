@@ -21,6 +21,7 @@ pub enum Screen {
     Devices,
     Inspect,
     Backup,
+    BackupPath,
     BackupDone,
     MigrateTarget,
     Migrate,
@@ -47,6 +48,7 @@ pub struct App {
 
     pub inspect: Option<InspectResult>,
     pub backup_dir: Option<PathBuf>,
+    pub backup_path_draft: String,
     pub busy_msg: String,
     pub last_result: String,
     pub progress_pct: Option<u8>,
@@ -66,6 +68,9 @@ impl App {
             target_dev: None,
             inspect: None,
             backup_dir: None,
+            backup_path_draft: std::env::var("HOME")
+                .map(|h| format!("{h}/switch-backup"))
+                .unwrap_or_else(|_| "/tmp/switch-backup".to_string()),
             busy_msg: String::new(),
             last_result: String::new(),
             progress_pct: None,
@@ -103,6 +108,7 @@ impl App {
                 }
             Screen::Devices => self.key_devices(code),
             Screen::Inspect => self.key_inspect(code),
+            Screen::BackupPath => self.key_backup_path(code),
             Screen::MigrateTarget => self.key_migrate_target(code),
             Screen::BackupDone | Screen::MigrateDone
                 if (code == KeyCode::Enter || code == KeyCode::Esc || code == KeyCode::Char('q')
@@ -148,7 +154,12 @@ impl App {
 
     fn key_inspect(&mut self, code: KeyCode) {
         match code {
-            KeyCode::Char('1') => self.start_backup(),
+            KeyCode::Char('1') => {
+                if let Some(dir) = self.backup_dir.clone() {
+                    self.backup_path_draft = dir.to_string_lossy().to_string();
+                }
+                self.screen = Screen::BackupPath;
+            }
             KeyCode::Char('3') => {
                 self.screen = Screen::MigrateTarget;
                 self.selected = 0;
@@ -167,12 +178,28 @@ impl App {
         let Some(src) = self.source_dev.clone() else { return };
         let Some(insp) = self.inspect.clone() else { return };
 
-        let out_dir = crate::operations::backup::default_backup_dir();
+        let out_dir = parse_backup_path(&self.backup_path_draft);
+        if out_dir.as_os_str().is_empty() {
+            self.last_result = "Путь бэкапа пуст — введите каталог.".to_string();
+            self.push_log(self.last_result.clone());
+            self.screen = Screen::BackupDone;
+            return;
+        }
+        if let Err(e) = std::fs::create_dir_all(&out_dir)
+            .map_err(|e| format!("не удалось создать каталог {}: {e}", out_dir.display()))
+        {
+            self.last_result =
+                format!("Ошибка пути бэкапа: {e}");
+            self.push_log(self.last_result.clone());
+            self.screen = Screen::BackupDone;
+            return;
+        }
         let plan = BackupPlan {
             source: src,
             emu: insp.emummc.clone(),
             out_dir,
             games: insp.games.clone(),
+            homebrew: insp.homebrew.clone(),
         };
         self.screen = Screen::Backup;
         self.busy = true;
@@ -194,6 +221,22 @@ impl App {
             );
             let _ = tx.send(WorkerMsg::BackupDone(r));
         });
+    }
+
+    fn key_backup_path(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Enter => self.start_backup(),
+            KeyCode::Esc => {
+                self.screen = Screen::Inspect;
+            }
+            KeyCode::Backspace => {
+                self.backup_path_draft.pop();
+            }
+            KeyCode::Char(c) => {
+                self.backup_path_draft.push(c);
+            }
+            _ => {}
+        }
     }
 
     fn key_migrate_target(&mut self, code: KeyCode) {
@@ -296,9 +339,11 @@ impl App {
                 self.progress_pct = None;
                 match res {
                     Ok(insp) => {
+                        let scan_msg = insp.scan_msg.clone();
                         self.inspect = Some(insp);
                         self.screen = Screen::Inspect;
                         self.push_log("Анализ завершён".to_string());
+                        self.push_log(scan_msg);
                     }
                     Err(e) => {
                         self.last_result = format!("Ошибка анализа: {e}");
@@ -350,4 +395,21 @@ impl App {
             }
         }
     }
+}
+
+/// Разбирает введённый путь: поддерживает `~` и `~/...`; пустой путь — ошибка.
+fn parse_backup_path(input: &str) -> PathBuf {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return PathBuf::new();
+    }
+    if trimmed == "~" {
+        return std::env::var("HOME").map(PathBuf::from).unwrap_or(PathBuf::from("/"));
+    }
+    if let Some(rest) = trimmed.strip_prefix("~/") {
+        return std::env::var("HOME")
+            .map(|h| PathBuf::from(h).join(rest))
+            .unwrap_or_else(|_| PathBuf::from(trimmed));
+    }
+    PathBuf::from(trimmed)
 }

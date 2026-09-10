@@ -1,0 +1,14 @@
+# Таблица названий игр Nintendo Switch для switch-migrator
+#
+# Формат: <16-hex title id>,<Название>
+# Используйте UPPER-HEX для title id (при поиске регистр не важен).
+# Строки, начинающиеся с # — комментарии.
+# Обновления/DLC имеют другие id (например, ...E001) — для них названия
+# можно добавить отдельной строкой, или они покажутся как сам title id.
+
+0100000000010000,System update
+01007EF00011E000,The Legend of Zelda: Breath of the Wild
+0100F2C0115B6000,The Legend of Zelda: Skyward Sword HD
+01006A800016E000,Super Mario Odyssey
+0100ABF008968000,Super Mario 3D World + Bowser's Fury
+0100D9400CEC2000,Animal Crossing: New Horizons

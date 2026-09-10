@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use crate::disk::partition::{self, EmuGeometry, PartKind};
 use crate::disk::BlockDevice;
 use crate::fat32::games;
+use crate::manifest::HomebrewEntry;
 
 /// Результат полного анализа выбранной карты.
 #[derive(Debug, Clone, Default)]
@@ -17,8 +18,13 @@ pub struct InspectResult {
     pub emummc: Option<EmuGeometry>,
     /// Список игр из `Nintendo/Contents/registered`.
     pub games: Vec<crate::manifest::GameEntry>,
+    /// Список homebrew-приложений из `/switch/`.
+    #[allow(clippy::vec_box)]
+    pub homebrew: Vec<HomebrewEntry>,
     /// Путь к смонтированному FAT32 (или None).
     pub fat32_mount: Option<PathBuf>,
+    /// Человекочитаемый итог сканирования/ошибки FAT32 (для логов и TUI).
+    pub scan_msg: String,
     /// Сводка для лога.
     pub summary: String,
 }
@@ -51,30 +57,95 @@ pub fn inspect_disk(dev: &BlockDevice) -> Result<InspectResult, String> {
     }
 
     // 4. Сканирование игр: монтируем FAT32 по-требованию (RO).
-    let mut sum = String::new();
+    let mut scan = String::new();
     if let Some(fp) = fat {
         let part_dev = crate::disk::partition_path(&dev.path, fp.index as u32);
-        match mount_readonly(&part_dev) {
-            Ok(mnt) => {
-                result.games =
-                    games::scan_registered(&mnt.join("Nintendo/Contents/registered"));
+        match mount_fat32(&part_dev) {
+            Ok((mnt, owned)) => {
+                result.games = games::scan_nintendo(&mnt);
+                result.homebrew = games::scan_homebrew(&mnt);
                 result.fat32_mount = Some(mnt.clone());
-                let size = result.games.iter().map(|g| g.size_bytes).sum::<u64>();
-                sum = format!(
-                    "Игр: {} ({} ГБ)",
+                let gsize = result.games.iter().map(|g| g.size_bytes).sum::<u64>();
+                scan = format!(
+                    "Игр: {} (всего {}), homebrew: {}",
                     result.games.len(),
-                    crate::utils::human::human_bytes(size)
+                    crate::utils::human::human_bytes(gsize),
+                    result.homebrew.len()
                 );
-                let _ = crate::utils::commands::run_capture("umount", &[mnt.to_str().unwrap()]);
+                // Размонтируем только то, что смонтировали сами (чужую точку
+                // из /run/media трогать нельзя).
+                if owned {
+                    let _ = crate::utils::commands::run_capture("umount", &[mnt.to_str().unwrap()]);
+                }
             }
             Err(e) => {
-                sum = format!("FAT32 недоступен для сканирования: {e}");
+                scan = format!("FAT32 недоступен для сканирования: {e}");
             }
         }
+    } else {
+        scan = "FAT32-раздел не найден".to_string();
     }
+    result.scan_msg = scan.clone();
+    result.summary = scan;
 
-    result.summary = sum;
     Ok(result)
+}
+
+/// Возвращает точку монтирования FAT32 для сканирования.
+///
+/// Если раздел уже смонтирован (например, GUI-демоном в `/run/media/...`),
+/// используем существующую точку и помечаем `owned=false` (размонтировать её
+/// нельзя). Иначе монтируем сами в RO как `owned=true`.
+pub(crate) fn mount_fat32(dev: &std::path::Path) -> Result<(PathBuf, bool), String> {
+    if let Some(mnt) = existing_mount(dev) {
+        return Ok((mnt, false));
+    }
+    mount_readonly(dev).map(|mnt| (mnt, true))
+}
+
+/// Ищет уже смонтированную точку для устройства через `/proc/self/mountinfo`.
+fn existing_mount(dev: &std::path::Path) -> Option<PathBuf> {
+    let mountinfo = std::fs::read_to_string("/proc/self/mountinfo").ok()?;
+    let dev_s = dev.to_str()?;
+    for line in mountinfo.lines() {
+        let (left, right) = line.split_once(" - ")?;
+        let mut rparts = right.split_whitespace();
+        let _fstype = rparts.next()?;
+        let src = rparts.next()?;
+        if src != dev_s {
+            continue;
+        }
+        // Mount point — 5-е поле слева от разделителя.
+        let mp = left.split_whitespace().nth(4)?;
+        let path = PathBuf::from(unescape_octal(mp));
+        if path.is_dir() {
+            return Some(path);
+        }
+    }
+    None
+}
+
+/// `mountinfo` кодирует спецсимволы как `\040` (октально) — раскодируем.
+fn unescape_octal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' && i + 3 < bytes.len() {
+            if let Some(v) =
+                std::str::from_utf8(&bytes[i + 1..i + 4])
+                    .ok()
+                    .and_then(|t| u8::from_str_radix(t, 8).ok())
+            {
+                out.push(v as char);
+                i += 4;
+                continue;
+            }
+        }
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+    out
 }
 
 /// Монтирует блочное устройство в RO во временную директорию.

@@ -22,6 +22,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Screen::Devices => draw_devices(frame, app),
         Screen::Inspect => draw_inspect(frame, app),
         Screen::Backup => draw_busy(frame, app),
+        Screen::BackupPath => draw_backup_path(frame, app),
         Screen::BackupDone | Screen::MigrateDone => draw_done(frame, app),
         Screen::MigrateTarget => draw_target(frame, app),
         Screen::Migrate => draw_busy(frame, app),
@@ -45,7 +46,7 @@ fn draw_welcome(frame: &mut Frame) {
     ];
     let p = Paragraph::new(text)
         .alignment(Alignment::Center)
-        .block(Block::default().borders(Borders::ALL).title("Добро пожаловать"));
+        .block(Block::default().borders(Borders::ALL).title("Maintained by darkside 🐾"));
     frame.render_widget(p, frame.area());
 }
 
@@ -100,8 +101,9 @@ fn draw_inspect(frame: &mut Frame, app: &App) {
         .margin(1)
         .constraints([
             Constraint::Length(1),
-            Constraint::Length(4),
-            Constraint::Length(4),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
             Constraint::Min(4),
             Constraint::Length(1),
         ])
@@ -124,7 +126,7 @@ fn draw_inspect(frame: &mut Frame, app: &App) {
                 .as_ref()
                 .map(|e| {
                     format!(
-                        "EmuMMC: сектор {}, {} секторов ({} ГБ)",
+                        "EmuMMC: сектор {}, {} секторов ({})",
                         e.emu_start,
                         e.emu_len,
                         human_bytes(e.emu_bytes)
@@ -138,28 +140,101 @@ fn draw_inspect(frame: &mut Frame, app: &App) {
                 insp.games.len(),
                 human_bytes(insp.games.iter().map(|g| g.size_bytes).sum())
             );
-            frame.render_widget(Paragraph::new(games), chunks[2]);
+            let games_line = if insp.games.is_empty() {
+                Line::from(Span::styled(
+                    if insp.fat32_mount.is_some() {
+                        format!("{games} — игра не найдена")
+                    } else {
+                        insp.scan_msg.clone()
+                    },
+                    Style::default().fg(Color::Yellow),
+                ))
+            } else {
+                Line::from(games)
+            };
+            frame.render_widget(Paragraph::new(games_line), chunks[2]);
 
-            let list_items: Vec<ListItem> = insp
-                .games
-                .iter()
-                .take(30)
-                .map(|g| ListItem::new(format!("{}  {}", g.title_id, human_bytes(g.size_bytes))))
-                .collect();
+            let hb = format!("Homebrew: {}", insp.homebrew.len());
+            let hb_line = Line::from(Span::styled(
+                hb,
+                Style::default().fg(Color::Magenta),
+            ));
+            frame.render_widget(Paragraph::new(hb_line), chunks[3]);
+
+            // Список: секция «Игры», затем «Homebrew».
+            let mut list_items: Vec<ListItem> = Vec::new();
+            list_items.push(ListItem::new(Line::from(Span::styled(
+                format!("— Игры ({}) —", insp.games.len()),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ))));
+            for g in insp.games.iter().take(15) {
+                let title = if g.name.is_empty() {
+                    g.title_id.clone()
+                } else {
+                    format!("{} ({})", g.name, g.title_id)
+                };
+                list_items.push(ListItem::new(format!(
+                    "  {:<46} {}",
+                    title,
+                    human_bytes(g.size_bytes)
+                )));
+            }
+            if !insp.homebrew.is_empty() {
+                list_items.push(ListItem::new(Line::from(Span::styled(
+                    format!("— Homebrew ({}) —", insp.homebrew.len()),
+                    Style::default()
+                        .fg(Color::Magenta)
+                        .add_modifier(Modifier::BOLD),
+                ))));
+                for h in insp.homebrew.iter().take(10) {
+                    list_items.push(ListItem::new(format!(
+                        "  {:<46} {}",
+                        h.name,
+                        human_bytes(h.size_bytes)
+                    )));
+                }
+            }
             let list = List::new(list_items)
-                .block(Block::default().borders(Borders::ALL).title("Найденные игры"));
-            frame.render_widget(list, chunks[3]);
+                .block(Block::default().borders(Borders::ALL).title("Найдено на карте"));
+            frame.render_widget(list, chunks[4]);
         }
         None => {
             frame.render_widget(
                 Paragraph::new("Анализ карты...").alignment(Alignment::Center),
-                chunks[0].union(chunks[3]),
+                chunks[0].union(chunks[4]),
             );
         }
     }
 
     let menu = " [1] Создать бэкап  [3] Мигрировать на другую карту  [q] назад";
-    frame.render_widget(Paragraph::new(menu), chunks[4]);
+    frame.render_widget(Paragraph::new(menu), chunks[5]);
+}
+
+fn draw_backup_path(frame: &mut Frame, app: &App) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(1)
+        .constraints([Constraint::Min(1), Constraint::Length(3)])
+        .split(frame.area());
+
+    let text = vec![
+        Line::from("Куда сохранить бэкап карты?"),
+        Line::from(""),
+        Line::from(Span::styled(
+            app.backup_path_draft.clone(),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )),
+    ];
+    let p = Paragraph::new(text)
+        .block(Block::default().borders(Borders::ALL).title("Путь для бэкапа"));
+    frame.render_widget(p, chunks[0]);
+
+    let hint = " введите путь (поддерживается ~)  [Enter] сохранить  [Esc] назад  [Backspace] стереть";
+    frame.render_widget(Paragraph::new(hint), chunks[1]);
 }
 
 fn draw_busy(frame: &mut Frame, app: &App) {

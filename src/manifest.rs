@@ -32,6 +32,9 @@ pub struct BackupManifest {
     pub games: Vec<GameEntry>,
     /// Количество игр (для быстрого отображения без парсинга).
     pub game_count: usize,
+    /// Список homebrew-приложений (`switch/<app>/*.nro`).
+    #[serde(default)]
+    pub homebrew: Vec<HomebrewEntry>,
 
     /// Размер сжатого образа EmuMMC на диске.
     pub image_zst_bytes: u64,
@@ -56,6 +59,7 @@ impl BackupManifest {
             fat32,
             games,
             game_count,
+            homebrew: Vec::new(),
             image_zst_bytes: 0,
         }
     }
@@ -109,6 +113,9 @@ pub struct GameEntry {
     pub path: String,
     /// Размер каталога в байтах.
     pub size_bytes: u64,
+    /// Человекочитаемое название (пустая строка, если нет в таблице).
+    #[serde(default)]
+    pub name: String,
 }
 
 impl GameEntry {
@@ -117,7 +124,25 @@ impl GameEntry {
             title_id,
             path,
             size_bytes,
+            name: String::new(),
         }
+    }
+}
+
+/// Одно установленное homebrew-приложение.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HomebrewEntry {
+    /// Имя приложения (по каталогу в `/switch/`).
+    pub name: String,
+    /// Путь, например `switch/App/App.nro`.
+    pub path: String,
+    /// Размер `.nro` в байтах.
+    pub size_bytes: u64,
+}
+
+impl HomebrewEntry {
+    pub fn new(name: String, path: String, size_bytes: u64) -> Self {
+        HomebrewEntry { name, path, size_bytes }
     }
 }
 
