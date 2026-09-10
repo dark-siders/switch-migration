@@ -109,6 +109,17 @@
    бэкапа окном из ini ложатся ровно на старт p2, значение согласовано).
 6. `fix_archive_bit`; unmount; `sync_disk`.
 
+> ⚠️ **Fix Archive Bit на практике (2026-09-10).** Текущая реализация в
+> `src/fat32/archive.rs` использует `FS_IOC_GETFLAGS/SETFLAGS` с
+> `EXT2_FLAG_ARCHIVE=0x20` — эти ioctl для vfat не работают (для FAT нужны
+> `FAT_IOCTL_GET_ATTRIBUTES/SET_ATTRIBUTES` из `linux/msdos_fs.h`), поэтому
+> после apply биты на карте не выставлены. На реальном Switch (Level 2)
+> пришлось разово прогнать hekate `fix_archive_bit`. Дополнительно: биты
+> были кривые уже на исходной 128 ГиБ (до фикса в launch — надписи без
+> картинок). Итог: **после любого apply на Switch нужен hekate-фикс**;
+> код `archive.rs` решено не править (решение владельца). См. также
+> «Переразметка» в `agent.md`.
+
 > **Камень на десктопах:** демон автоподключения (`devmon`/udevil, `systemctl
 > --user`) перемонтирует только что размеченный p1 и `mkfs.vfat` падает с
 > «mounted filesystem». Перед `apply` останавливайте его
