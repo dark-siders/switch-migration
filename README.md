@@ -163,7 +163,6 @@ src/
 #                        sudo pacman -S util-linux parted dosfstools
 # openSUSE Leap/Tumbleweed:
 #                        sudo zypper install util-linux parted dosfstools
-# Void:                 sudo xbps-install util-linux parted dosfstools
 # Gentoo:               sudo emerge --ask sys-apps/util-linux sys-block/parted sys-fs/dosfstools
 # ALT:                  sudo apt-get install util-linux fdisk parted dosfstools
 #   (sfdisk/wipefs/partprobe/partx/mount/blockdev — util-linux+fdisk+parted;
@@ -186,7 +185,7 @@ sudo ./target/x86_64-unknown-linux-musl/release/switch-migrator
 Готовый статический бинарь публикуется как артефакт GitLab CI
 (см. `.gitlab-ci.yml`, стадия `static-release`), а `distro-smoke` проверяет
 бинарь + рантайм-утилиты на базовых образах Debian/Ubuntu/Fedora/Arch/
-openSUSE/Void.
+openSUSE.
 
 ## Тестирование
 

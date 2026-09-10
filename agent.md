@@ -188,7 +188,7 @@
 - Dev-shell: `nix develop`
 - Rust-сборка без nix: `cargo build` (нужен `rust` через nix-shell/rustup)
 - **Статический musl-бинарь для обычных дистрибутивов** (Fedora/Ubuntu/Mint/
-  Debian/Arch/Alt/openSUSE/Void/Gentoo): `rustup target add
+  Debian/Arch/Alt/openSUSE/Gentoo): `rustup target add
   x86_64-unknown-linux-musl && cargo build --release --target
   x86_64-unknown-linux-musl` → один файл, statically linked (проверено:
   1.9 МБ, `file` показывал `statically linked, stripped`). Проще — через
@@ -196,7 +196,7 @@
   в README «Сборка и запуск без Nix». Нюанс: `nix build` НЕ портабелен на
   другие дистры (бинарник линкуется на `/nix/store`). В CI публикуется
   статический артефакт (см. `.gitlab-ci.yml`, стадия `static-release`), а
-  джоб `distro-smoke` (матрица Debian/Ubuntu/Fedora/Arch/openSUSE/Void)
+  джоб `distro-smoke` (матрица Debian/Ubuntu/Fedora/Arch/openSUSE)
   гоняет этот бинарь + набор рантайм-утилит на реальных базовых образах
   дистрибутивов (проверка установки пакетов и работы `ls`).
   Локальная проверка musl-сборки на этой машине: `nix develop` + `nix shell
